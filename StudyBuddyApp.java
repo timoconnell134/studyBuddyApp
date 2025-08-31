@@ -24,12 +24,21 @@ public class StudyBuddyApp {
 
     // ======== MODEL ======== //
 
-    /** Represents a day/time window on a single day. */
+    /**
+     * Represents a single availability window (day + start/end time).
+     * Immutable and validated so end > start.
+     */
     static class TimeSlot {
         final DayOfWeek day;
         final LocalTime start;
         final LocalTime end;
 
+        /**
+         * Creates a time window on a specific day.
+         * @param day Day of week
+         * @param start start time (inclusive)
+         * @param end end time (exclusive)
+         */
         TimeSlot(DayOfWeek day, LocalTime start, LocalTime end) {
             if (end.isBefore(start) || end.equals(start)) {
                 throw new IllegalArgumentException("End time must be after start time");
@@ -39,11 +48,18 @@ public class StudyBuddyApp {
             this.end = Objects.requireNonNull(end);
         }
 
+        /**
+         * Returns true if two slots overlap on the same day.
+         */
         boolean overlaps(TimeSlot other) {
             if (this.day != other.day) return false;
             return !(this.end.isBefore(other.start) || this.start.isAfter(other.end));
         }
 
+        /**
+         * Computes the overlapping window between two slots (if any).
+         * @return intersection slot or null if none
+         */
         TimeSlot intersection(TimeSlot other) {
             if (!overlaps(other)) return null;
             LocalTime s = this.start.isAfter(other.start) ? this.start : other.start;
@@ -52,29 +68,58 @@ public class StudyBuddyApp {
             return null;
         }
 
+        /**
+         * Pretty format like: MONDAY 14:00-16:00
+         */
         @Override public String toString() { return day + " " + start + "-" + end; }
     }
 
+    /**
+     * Represents a student with ID, name, enrolled courses, and availability.
+     */
     static class Student {
         final int id;
         String name;
         final Set<String> courses = new LinkedHashSet<>();
         final List<TimeSlot> availability = new ArrayList<>();
 
+        /**
+         * Creates a student shell with no courses/availability yet.
+         */
         Student(int id, String name) { this.id = id; this.name = name; }
+
+        /**
+         * Enrolls the student in a course (stored normalized).
+         */
         void addCourse(String course) { courses.add(normalizeCourse(course)); }
+
+        /**
+         * Appends a new availability slot.
+         */
         void addAvailability(TimeSlot slot) { availability.add(slot); }
+
+        /**
+         * Removes an availability slot by index.
+         * @return true if removed
+         */
         boolean removeAvailability(int index) {
             if (index < 0 || index >= availability.size()) return false;
             availability.remove(index);
             return true;
         }
+
+        /**
+         * Compact roster line with counts (not full times).
+         */
         @Override public String toString() {
             return String.format("[%d] %s | Courses=%s | Avail=%d slots", id, name, courses, availability.size());
         }
     }
 
-    /** Meeting/session with a participant list and confirmations per participant. */
+    /**
+     * Represents a study session (course + time) with participants and per-participant confirmations.
+     * Participants/confirmations are tracked by student ID (names are resolved in the CLI for display).
+     */
     static class StudySession {
         final int id;
         final String course; // normalized
@@ -82,44 +127,75 @@ public class StudyBuddyApp {
         final Set<Integer> participantIds = new LinkedHashSet<>();
         final Set<Integer> confirmedIds = new LinkedHashSet<>();
 
+        /**
+         * Creates a new session with initial participants.
+         */
         StudySession(int id, String course, TimeSlot time, Collection<Integer> participants) {
             this.id = id; this.course = normalizeCourse(course); this.time = time;
             if (participants != null) participantIds.addAll(participants);
         }
+
+        /** True if the given student is in the participant list. */
         boolean isParticipant(int studentId) { return participantIds.contains(studentId); }
+
+        /** Adds a participant (no duplicates due to Set). */
         void addParticipant(int studentId) { participantIds.add(studentId); }
+
+        /** Confirms attendance for a participant. */
         void confirm(int studentId) { if (participantIds.contains(studentId)) confirmedIds.add(studentId); }
+
+        /** True if everyone in the session has confirmed. */
         boolean isFullyConfirmed() { return !participantIds.isEmpty() && confirmedIds.containsAll(participantIds); }
+
+        /**
+         * Minimal string summary; the CLI prints human-friendly participant names separately.
+         */
         @Override public String toString() {
-            // Minimal—CLI prints friendly names.
             return String.format("Session[%d] %s | %s", id, course, time);
         }
     }
 
     // ======== REPOSITORY ======== //
 
+    /**
+     * In-memory storage for students and sessions.
+     * Provides CRUD-like helpers and simple searches.
+     */
     static class Repository {
         private final Map<Integer, Student> students = new LinkedHashMap<>();
         private final Map<Integer, StudySession> sessions = new LinkedHashMap<>();
         private int studentSeq = 1;
         private int sessionSeq = 1;
 
+        /** Creates and stores a new student. */
         Student createStudent(String name) {
             Student s = new Student(studentSeq++, name);
             students.put(s.id, s);
             return s;
         }
+
+        /** Looks up a student by ID. */
         Student getStudent(int id) { return students.get(id); }
+
+        /** Returns all students in insertion order. */
         Collection<Student> allStudents() { return students.values(); }
 
+        /** Creates and stores a new session. */
         StudySession createSession(String course, TimeSlot time, Collection<Integer> participants) {
             StudySession ss = new StudySession(sessionSeq++, course, time, participants);
             sessions.put(ss.id, ss);
             return ss;
         }
+
+        /** Looks up a session by ID. */
         StudySession getSession(int id) { return sessions.get(id); }
+
+        /** Returns all sessions in insertion order. */
         Collection<StudySession> allSessions() { return sessions.values(); }
 
+        /**
+         * Returns classmates (excluding the given student) enrolled in a course.
+         */
         List<Student> classmatesInCourse(int studentId, String course) {
             String c = normalizeCourse(course);
             List<Student> res = new ArrayList<>();
@@ -130,12 +206,19 @@ public class StudyBuddyApp {
             return res;
         }
 
+        /**
+         * Finds sessions by course code.
+         */
         List<StudySession> searchSessionsByCourse(String course) {
             String c = normalizeCourse(course);
             List<StudySession> res = new ArrayList<>();
             for (StudySession s : sessions.values()) if (s.course.equals(c)) res.add(s);
             return res;
         }
+
+        /**
+         * Finds sessions where any participant's name contains the substring.
+         */
         List<StudySession> searchSessionsByStudentName(String nameSubstr) {
             String q = nameSubstr.toLowerCase();
             List<StudySession> res = new ArrayList<>();
@@ -151,8 +234,13 @@ public class StudyBuddyApp {
 
     // ======== CONTROLLERS ======== //
 
+    /**
+     * Handles student profile creation.
+     */
     static class ProfileController {
         private final Repository repo; ProfileController(Repository r) { this.repo = r; }
+
+        /** Creates a student and enrolls them in initial courses. */
         Student createProfile(String name, List<String> initialCourses) {
             Student s = repo.createStudent(name);
             for (String c : initialCourses) s.addCourse(c);
@@ -160,23 +248,53 @@ public class StudyBuddyApp {
         }
     }
 
+    /**
+     * Handles adding/removing availability.
+     */
     static class AvailabilityController {
         private final Repository repo; AvailabilityController(Repository r) { this.repo = r; }
+
+        /** Adds an availability slot to the given student. */
         void addAvailability(int studentId, TimeSlot slot) { Student s = repo.getStudent(studentId); if (s!=null) s.addAvailability(slot); }
+
+        /** Removes availability by index. */
         boolean removeAvailability(int studentId, int index) { Student s = repo.getStudent(studentId); return s!=null && s.removeAvailability(index); }
     }
 
+    /**
+     * Handles session operations and match suggestions.
+     */
     static class SessionController {
         private final Repository repo; SessionController(Repository r) { this.repo = r; }
+
+        /** Returns classmates in a given course for the student. */
         List<Student> classmates(int studentId, String course) { return repo.classmatesInCourse(studentId, course); }
+
+        /** Returns all sessions. */
         Collection<StudySession> allSessions() { return repo.allSessions(); }
+
+        /** Searches sessions by course code. */
         List<StudySession> searchByCourse(String course) { return repo.searchSessionsByCourse(course); }
+
+        /** Searches sessions by participant name substring. */
         List<StudySession> searchByStudentName(String nameSubstr) { return repo.searchSessionsByStudentName(nameSubstr); }
+
+        /** Returns a session by ID. */
         StudySession getSession(int id) { return repo.getSession(id); }
+
+        /** Creates a new session. */
         StudySession create(String course, TimeSlot time, Collection<Integer> participants) { return repo.createSession(course, time, participants); }
+
+        /** Adds the student to a session's participant list. */
         void join(int sessionId, int studentId) { StudySession s = repo.getSession(sessionId); if (s!=null) s.addParticipant(studentId); }
+
+        /** Marks the session as confirmed by the student. */
         void confirm(int sessionId, int studentId) { StudySession s = repo.getSession(sessionId); if (s!=null) s.confirm(studentId); }
 
+        /**
+         * Computes overlapping availability windows between the active student and classmates in the same course.
+         * Returns a map from classmate -> list of overlapped time slots.
+         */
         Map<Student, List<TimeSlot>> suggestMatches(int studentId, String course) {
             Student me = repo.getStudent(studentId);
             Map<Student, List<TimeSlot>> res = new LinkedHashMap<>();
@@ -192,6 +310,9 @@ public class StudyBuddyApp {
             return res;
         }
 
+        /**
+         * Merges overlapping/adjacent slots on same day for readability.
+         */
         private static List<TimeSlot> mergeAdjacent(List<TimeSlot> slots) {
             if (slots.isEmpty()) return slots;
             slots.sort(Comparator.<TimeSlot, DayOfWeek>comparing(ts -> ts.day)
@@ -212,6 +333,9 @@ public class StudyBuddyApp {
 
     // ======== VIEW (CLI) ======== //
 
+    /**
+     * CLI (Command Line Interface) to drive the app: prompts, menus, and printing.
+     */
     static class CLI {
         private final Scanner in = new Scanner(System.in);
         private final Repository repo;
@@ -221,10 +345,11 @@ public class StudyBuddyApp {
         private Integer activeStudentId = null;
         private final DateTimeFormatter tf = DateTimeFormatter.ofPattern("HH:mm");
 
-        // Fixed course catalog per spec
+        // Fixed course catalog (per requirements)
         private static final String C1 = "CPSC 3720";
         private static final String C2 = "MATH 3110";
 
+        /** Wires controllers to the shared repository. */
         CLI(Repository repo) {
             this.repo = repo;
             this.profileCtl = new ProfileController(repo);
@@ -232,12 +357,14 @@ public class StudyBuddyApp {
             this.sessionCtl = new SessionController(repo);
         }
 
+        /**
+         * Boots the app: seeds data, creates user's profile, then loops menu.
+         */
         void run() {
             println("\n=== Study Buddy (CLI) ===");
             seedClassmates();
             seedPlannedSessions();
             promptCreateProfile();
-            // (Removed showRoster() at startup)
             while (true) {
                 try {
                     showHeader();
@@ -251,7 +378,7 @@ public class StudyBuddyApp {
                         case "5": createNewSession(); break;
                         case "6": joinSession(); break;
                         case "7": confirmMyMeetings(); break;
-                        case "8": viewAllStudentsAvailability(); break; // NEW
+                        case "8": viewAllStudentsAvailability(); break;
                         case "0": println("Goodbye!"); return;
                         default: println("Unknown option");
                     }
@@ -261,7 +388,10 @@ public class StudyBuddyApp {
             }
         }
 
+        /** Shows the active student's summary at the top of each loop. */
         private void showHeader() { println("\nActive: " + repo.getStudent(activeStudentId)); }
+
+        /** Prints the main menu. */
         private void showMenu() {
             println("\n1) Manage availability (add/remove)");
             println("2) View classmates in my course");
@@ -275,6 +405,10 @@ public class StudyBuddyApp {
         }
 
         // ---- Startup helpers ----
+
+        /**
+         * Seeds four classmates with courses and availability (Alice, Bob, Jon, Mary).
+         */
         private void seedClassmates() {
             Student alice = repo.createStudent("Alice");
             alice.addCourse(C1);
@@ -294,6 +428,9 @@ public class StudyBuddyApp {
             mary.addAvailability(new TimeSlot(DayOfWeek.TUESDAY, LocalTime.of(10,0), LocalTime.of(12,0)));
         }
 
+        /**
+         * Seeds a couple of sessions (one per course) so the user can search/join/confirm right away.
+         */
         private void seedPlannedSessions() {
             Student alice = findByName("Alice");
             Student bob = findByName("Bob");
@@ -309,11 +446,17 @@ public class StudyBuddyApp {
             }
         }
 
+        /**
+         * Utility to find a student by case-insensitive name.
+         */
         private Student findByName(String name) {
             for (Student s : repo.allStudents()) if (s.name.equalsIgnoreCase(name)) return s;
             return null;
         }
 
+        /**
+         * Prompts the user to create their profile and pick courses.
+         */
         private void promptCreateProfile() {
             println("\n-- Create Your Profile --");
             String name = prompt("Your name: ");
@@ -322,6 +465,9 @@ public class StudyBuddyApp {
             println("Welcome, " + name + "! Profile created.");
         }
 
+        /**
+         * Prompts for 1–2 courses from the fixed catalog; returns selected course codes.
+         */
         private List<String> chooseCourses() {
             println("Enroll in one or both courses (comma-separated indices):");
             println("  [0] " + C1);
@@ -341,6 +487,10 @@ public class StudyBuddyApp {
         }
 
         // ---- Core actions ----
+
+        /**
+         * Lists and edits (add/remove) the active user's availability.
+         */
         private void manageAvailability() {
             Student me = repo.getStudent(activeStudentId);
             println("\nYour availability:");
@@ -360,6 +510,9 @@ public class StudyBuddyApp {
             }
         }
 
+        /**
+         * Shows classmates in one of the active user's enrolled courses.
+         */
         private void viewClassmates() {
             Student me = repo.getStudent(activeStudentId);
             String course = pickCourseFromMine(me);
@@ -371,6 +524,9 @@ public class StudyBuddyApp {
             }
         }
 
+        /**
+         * Displays overlapping availability suggestions with classmates for a chosen course.
+         */
         private void suggestMatches() {
             Student me = repo.getStudent(activeStudentId);
             String course = pickCourseFromMine(me);
@@ -383,6 +539,9 @@ public class StudyBuddyApp {
             }
         }
 
+        /**
+         * Searches sessions: all, by course, or by name; prints friendly names.
+         */
         private void searchSessions() {
             println("\nSearch sessions: a) all, c) by course, n) by name, x) back");
             String ch = prompt("> ");
@@ -401,6 +560,10 @@ public class StudyBuddyApp {
             }
         }
 
+        /**
+         * Lets the active user create a new session (course + day/time).
+         * The creator is added as the first participant.
+         */
         private void createNewSession() {
             Student me = repo.getStudent(activeStudentId);
             String course = pickCourseFromMine(me);
@@ -413,6 +576,9 @@ public class StudyBuddyApp {
             printSessionLine(ss);
         }
 
+        /**
+         * Allows the active user to join an existing session (must be enrolled in the course).
+         */
         private void joinSession() {
             List<StudySession> all = new ArrayList<>(sessionCtl.allSessions());
             if (all.isEmpty()) { println("No sessions available."); return; }
@@ -430,6 +596,9 @@ public class StudyBuddyApp {
             println("Joined session " + id + ".");
         }
 
+        /**
+         * Lists sessions the active user is in and allows them to confirm attendance.
+         */
         private void confirmMyMeetings() {
             Student me = repo.getStudent(activeStudentId);
             List<StudySession> mine = new ArrayList<>();
@@ -454,7 +623,9 @@ public class StudyBuddyApp {
             }
         }
 
-        // NEW: View all students' availability (names with each slot)
+        /**
+         * Prints every student's availability (names + time slots).
+         */
         private void viewAllStudentsAvailability() {
             println("\n-- Students' Availability --");
             for (Student s : repo.allStudents()) {
@@ -469,7 +640,11 @@ public class StudyBuddyApp {
             }
         }
 
-        // --- printing helpers ---
+        // --- printing / utility helpers ---
+
+        /**
+         * Prints a session line with participant names and confirmation names.
+         */
         private void printSessionLine(StudySession s) {
             String participants = toNames(s.participantIds);
             String confirmed = toNames(s.confirmedIds);
@@ -479,6 +654,9 @@ public class StudyBuddyApp {
                     " | confirmed=" + confirmed + tail);
         }
 
+        /**
+         * Converts a collection of student IDs to a list of names.
+         */
         private String toNames(Collection<Integer> ids) {
             List<String> names = new ArrayList<>();
             for (Integer pid : ids) {
@@ -488,6 +666,10 @@ public class StudyBuddyApp {
             return names.toString();
         }
 
+        /**
+         * Lets the user choose one of their enrolled courses by index.
+         * @return normalized course code
+         */
         private String pickCourseFromMine(Student me) {
             if (me.courses.isEmpty()) throw new IllegalStateException("You must be enrolled in at least one course.");
             List<String> mine = new ArrayList<>(me.courses);
@@ -497,9 +679,18 @@ public class StudyBuddyApp {
             return mine.get(idx);
         }
 
+        /** Prompts and trims a single line of input. */
         private String prompt(String msg) { System.out.print(msg); return in.nextLine().trim(); }
+
+        /** Convenience for printing a line. */
         private void println(String s) { System.out.println(s); }
+
+        /** Parses a time in HH:mm format. */
         private LocalTime parseTime(String s) { return LocalTime.parse(s, tf); }
+
+        /**
+         * Parses day input like "Mon", "monday", etc., into DayOfWeek.
+         */
         private DayOfWeek parseDay(String s) {
             s = s.trim();
             try { return DayOfWeek.valueOf(s.toUpperCase()); } catch (Exception ignored) {}
@@ -517,6 +708,10 @@ public class StudyBuddyApp {
     }
 
     // ======== BOOT ======== //
+
+    /**
+     * Program entrypoint. Creates the repository and launches the CLI.
+     */
     public static void main(String[] args) {
         Repository repo = new Repository();
         CLI cli = new CLI(repo);
@@ -524,5 +719,9 @@ public class StudyBuddyApp {
     }
 
     // ======== UTIL ======== //
+
+    /**
+     * Normalizes a course code (e.g., "cpsc 3720" -> "CPSC 3720").
+     */
     static String normalizeCourse(String c) { return c.trim().toUpperCase(Locale.ROOT); }
 }
