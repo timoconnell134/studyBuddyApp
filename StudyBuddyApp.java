@@ -3,23 +3,21 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 /**
- * Study Buddy - Ultra-simple CLI app for Clemson students.
- * Pattern: MVC (Models + Controllers + CLI View in one file for simplicity)
+ * Study Buddy - Streamlined CLI app for Clemson students.
  *
- * Requirements covered (only these):
- * - Create a student profile with enrolled courses (prompted at startup).
+ * Features in this version:
+ * - Create profile (prompted at startup) & enroll in courses.
  * - Add/remove availability.
- * - See classmates in the same course (pre-seeded classmates).
- * - Suggest matches (find overlapping availability by course).
- * - Propose sessions and the invitee can confirm/decline.
- * - Command-line, in-memory, no auth.
+ * - View classmates in your course.
+ * - Suggest matches (overlapping availability).
+ * - Search existing sessions; join one (course check enforced).
+ * - Create your own session (you choose course + day/time).
+ * - Confirm meetings you’re in (per-participant confirmations).
  *
- * Seeded data (exact per request):
- *   People: Alice, Bob, Jon, Mary (4 classmates) + the profile you create at runtime.
- *   Courses: CPSC 3720, MATH 3110.
- *
- * Compile:  javac StudyBuddyApp.java
- * Run:      java StudyBuddyApp
+ * Seeded data:
+ *   Students: Alice, Bob, Jon, Mary (+ your new profile)
+ *   Courses: CPSC 3720, MATH 3110
+ *   Pre-planned sessions exist so you can join/confirm immediately.
  */
 public class StudyBuddyApp {
 
@@ -45,7 +43,6 @@ public class StudyBuddyApp {
             return !(this.end.isBefore(other.start) || this.start.isAfter(other.end));
         }
 
-        /** Returns the intersection of two overlapping slots (same day). Returns null if no overlap. */
         TimeSlot intersection(TimeSlot other) {
             if (!overlaps(other)) return null;
             LocalTime s = this.start.isAfter(other.start) ? this.start : other.start;
@@ -54,9 +51,7 @@ public class StudyBuddyApp {
             return null;
         }
 
-        @Override public String toString() {
-            return day + " " + start + "-" + end;
-        }
+        @Override public String toString() { return day + " " + start + "-" + end; }
     }
 
     static class Student {
@@ -78,25 +73,30 @@ public class StudyBuddyApp {
         }
     }
 
-    enum SessionStatus { PENDING, CONFIRMED, DECLINED }
-
+    /** Meeting/session with a participant list and confirmations per participant. */
     static class StudySession {
         final int id;
-        final int inviterId;
-        final int inviteeId;
         final String course; // normalized
         final TimeSlot time;
-        SessionStatus status = SessionStatus.PENDING;
+        final Set<Integer> participantIds = new LinkedHashSet<>();
+        final Set<Integer> confirmedIds = new LinkedHashSet<>();
 
-        StudySession(int id, int inviterId, int inviteeId, String course, TimeSlot time) {
-            this.id = id; this.inviterId = inviterId; this.inviteeId = inviteeId; this.course = course; this.time = time;
+        StudySession(int id, String course, TimeSlot time, Collection<Integer> participants) {
+            this.id = id; this.course = normalizeCourse(course); this.time = time;
+            if (participants != null) participantIds.addAll(participants);
         }
+        boolean isParticipant(int studentId) { return participantIds.contains(studentId); }
+        void addParticipant(int studentId) { participantIds.add(studentId); }
+        void confirm(int studentId) { if (participantIds.contains(studentId)) confirmedIds.add(studentId); }
+        boolean isFullyConfirmed() { return !participantIds.isEmpty() && confirmedIds.containsAll(participantIds); }
         @Override public String toString() {
-            return String.format("Session[%d] %s | %s | inviter=%d -> invitee=%d | status=%s", id, course, time, inviterId, inviteeId, status);
+            // Keep this minimal; CLI will print names for participants/confirmed.
+            return String.format("Session[%d] %s | %s", id, course, time);
         }
     }
 
-    /** Simple in-memory repository. */
+    // ======== REPOSITORY ======== //
+
     static class Repository {
         private final Map<Integer, Student> students = new LinkedHashMap<>();
         private final Map<Integer, StudySession> sessions = new LinkedHashMap<>();
@@ -111,6 +111,14 @@ public class StudyBuddyApp {
         Student getStudent(int id) { return students.get(id); }
         Collection<Student> allStudents() { return students.values(); }
 
+        StudySession createSession(String course, TimeSlot time, Collection<Integer> participants) {
+            StudySession ss = new StudySession(sessionSeq++, course, time, participants);
+            sessions.put(ss.id, ss);
+            return ss;
+        }
+        StudySession getSession(int id) { return sessions.get(id); }
+        Collection<StudySession> allSessions() { return sessions.values(); }
+
         List<Student> classmatesInCourse(int studentId, String course) {
             String c = normalizeCourse(course);
             List<Student> res = new ArrayList<>();
@@ -121,30 +129,26 @@ public class StudyBuddyApp {
             return res;
         }
 
-        StudySession proposeSession(int inviterId, int inviteeId, String course, TimeSlot time) {
-            StudySession ss = new StudySession(sessionSeq++, inviterId, inviteeId, normalizeCourse(course), time);
-            sessions.put(ss.id, ss);
-            return ss;
-        }
-        List<StudySession> incomingFor(int studentId) {
+        List<StudySession> searchSessionsByCourse(String course) {
+            String c = normalizeCourse(course);
             List<StudySession> res = new ArrayList<>();
-            for (StudySession s : sessions.values()) if (s.inviteeId == studentId) res.add(s);
+            for (StudySession s : sessions.values()) if (s.course.equals(c)) res.add(s);
             return res;
         }
-        List<StudySession> outgoingFor(int studentId) {
+        List<StudySession> searchSessionsByStudentName(String nameSubstr) {
+            String q = nameSubstr.toLowerCase();
             List<StudySession> res = new ArrayList<>();
-            for (StudySession s : sessions.values()) if (s.inviterId == studentId) res.add(s);
-            return res;
-        }
-        void respond(int sessionId, boolean accept) {
-            StudySession ss = sessions.get(sessionId);
-            if (ss != null && ss.status == SessionStatus.PENDING) {
-                ss.status = accept ? SessionStatus.CONFIRMED : SessionStatus.DECLINED;
+            for (StudySession s : sessions.values()) {
+                for (Integer pid : s.participantIds) {
+                    Student st = students.get(pid);
+                    if (st != null && st.name.toLowerCase().contains(q)) { res.add(s); break; }
+                }
             }
+            return res;
         }
     }
 
-    // ======== CONTROLLERS (minimal) ======== //
+    // ======== CONTROLLERS ======== //
 
     static class ProfileController {
         private final Repository repo; ProfileController(Repository r) { this.repo = r; }
@@ -164,6 +168,14 @@ public class StudyBuddyApp {
     static class SessionController {
         private final Repository repo; SessionController(Repository r) { this.repo = r; }
         List<Student> classmates(int studentId, String course) { return repo.classmatesInCourse(studentId, course); }
+        Collection<StudySession> allSessions() { return repo.allSessions(); }
+        List<StudySession> searchByCourse(String course) { return repo.searchSessionsByCourse(course); }
+        List<StudySession> searchByStudentName(String nameSubstr) { return repo.searchSessionsByStudentName(nameSubstr); }
+        StudySession getSession(int id) { return repo.getSession(id); }
+        StudySession create(String course, TimeSlot time, Collection<Integer> participants) { return repo.createSession(course, time, participants); }
+        void join(int sessionId, int studentId) { StudySession s = repo.getSession(sessionId); if (s!=null) s.addParticipant(studentId); }
+        void confirm(int sessionId, int studentId) { StudySession s = repo.getSession(sessionId); if (s!=null) s.confirm(studentId); }
+
         Map<Student, List<TimeSlot>> suggestMatches(int studentId, String course) {
             Student me = repo.getStudent(studentId);
             Map<Student, List<TimeSlot>> res = new LinkedHashMap<>();
@@ -178,14 +190,12 @@ public class StudyBuddyApp {
             }
             return res;
         }
-        StudySession propose(int inviterId, int inviteeId, String course, TimeSlot chosenFromInviterAvail) { return repo.proposeSession(inviterId, inviteeId, course, chosenFromInviterAvail); }
-        List<StudySession> incoming(int studentId) { return repo.incomingFor(studentId); }
-        List<StudySession> outgoing(int studentId) { return repo.outgoingFor(studentId); }
-        void respond(int sessionId, boolean accept) { repo.respond(sessionId, accept); }
 
         private static List<TimeSlot> mergeAdjacent(List<TimeSlot> slots) {
             if (slots.isEmpty()) return slots;
-            slots.sort(Comparator.<TimeSlot, DayOfWeek>comparing(ts -> ts.day).thenComparing(ts -> ts.start).thenComparing(ts -> ts.end));
+            slots.sort(Comparator.<TimeSlot, DayOfWeek>comparing(ts -> ts.day)
+                    .thenComparing(ts -> ts.start)
+                    .thenComparing(ts -> ts.end));
             List<TimeSlot> merged = new ArrayList<>();
             TimeSlot cur = slots.get(0);
             for (int i = 1; i < slots.size(); i++) {
@@ -222,11 +232,11 @@ public class StudyBuddyApp {
         }
 
         void run() {
-            println(" === Study Buddy (CLI) ===");
-                    seedClassmates();
+            println("\n=== Study Buddy (CLI) ===");
+            seedClassmates();
+            seedPlannedSessions();
             promptCreateProfile();
             showRoster();
-            // main loop
             while (true) {
                 try {
                     showHeader();
@@ -236,9 +246,10 @@ public class StudyBuddyApp {
                         case "1": manageAvailability(); break;
                         case "2": viewClassmates(); break;
                         case "3": suggestMatches(); break;
-                        case "4": proposeSession(); break;
-                        case "5": reviewIncoming(); break;
-                        case "6": reviewOutgoing(); break;
+                        case "4": searchSessions(); break;
+                        case "5": createNewSession(); break;  // NEW
+                        case "6": joinSession(); break;
+                        case "7": confirmMyMeetings(); break;
                         case "0": println("Goodbye!"); return;
                         default: println("Unknown option");
                     }
@@ -248,24 +259,22 @@ public class StudyBuddyApp {
             }
         }
 
-        private void showHeader() {
-            println(" Active: " + repo.getStudent(activeStudentId));
-        }
+        private void showHeader() { println("\nActive: " + repo.getStudent(activeStudentId)); }
         private void showMenu() {
-            println(" 1) Manage availability (add/remove)");
+            println("\n1) Manage availability (add/remove)");
             println("2) View classmates in my course");
             println("3) Suggest matches (overlaps)");
-            println("4) Propose a study session");
-            println("5) Review incoming (confirm/decline)");
-            println("6) Review outgoing");
+            println("4) Search sessions (all / by course / by name)");
+            println("5) Create a new session");
+            println("6) Join an existing session");
+            println("7) Confirm my meetings");
             println("0) Exit");
         }
 
         // ---- Startup helpers ----
         private void seedClassmates() {
-            // EXACT requested seed: Alice, Bob, Jon, Mary and courses CPSC 3720 / MATH 3110
             Student alice = repo.createStudent("Alice");
-            alice.addCourse(C1); // CPSC 3720
+            alice.addCourse(C1);
             alice.addAvailability(new TimeSlot(DayOfWeek.MONDAY, LocalTime.of(14,0), LocalTime.of(16,0)));
             alice.addAvailability(new TimeSlot(DayOfWeek.WEDNESDAY, LocalTime.of(10,0), LocalTime.of(11,30)));
 
@@ -274,7 +283,7 @@ public class StudyBuddyApp {
             bob.addAvailability(new TimeSlot(DayOfWeek.MONDAY, LocalTime.of(15,0), LocalTime.of(17,0)));
 
             Student jon = repo.createStudent("Jon");
-            jon.addCourse(C2); // MATH 3110
+            jon.addCourse(C2);
             jon.addAvailability(new TimeSlot(DayOfWeek.TUESDAY, LocalTime.of(9,0), LocalTime.of(11,0)));
 
             Student mary = repo.createStudent("Mary");
@@ -282,9 +291,29 @@ public class StudyBuddyApp {
             mary.addAvailability(new TimeSlot(DayOfWeek.TUESDAY, LocalTime.of(10,0), LocalTime.of(12,0)));
         }
 
+        private void seedPlannedSessions() {
+            Student alice = findByName("Alice");
+            Student bob = findByName("Bob");
+            Student jon = findByName("Jon");
+            Student mary = findByName("Mary");
+            if (alice != null && bob != null) {
+                sessionCtl.create(C1, new TimeSlot(DayOfWeek.MONDAY, LocalTime.of(15,0), LocalTime.of(16,0)),
+                        List.of(alice.id, bob.id));
+            }
+            if (jon != null && mary != null) {
+                sessionCtl.create(C2, new TimeSlot(DayOfWeek.TUESDAY, LocalTime.of(10,30), LocalTime.of(11,30)),
+                        List.of(jon.id, mary.id));
+            }
+        }
+
+        private Student findByName(String name) {
+            for (Student s : repo.allStudents()) if (s.name.equalsIgnoreCase(name)) return s;
+            return null;
+        }
+
         private void promptCreateProfile() {
-            println(" -- Create Your Profile --");
-                    String name = prompt("Your name: ");
+            println("\n-- Create Your Profile --");
+            String name = prompt("Your name: ");
             Student me = profileCtl.createProfile(name, chooseCourses());
             activeStudentId = me.id;
             println("Welcome, " + name + "! Profile created.");
@@ -309,14 +338,16 @@ public class StudyBuddyApp {
         }
 
         private void showRoster() {
-            println(" -- Current Roster --");
+            println("\n-- Current Roster --");
             for (Student s : repo.allStudents()) println("  - " + s);
+            println("\n-- Pre-planned Sessions --");
+            for (StudySession s : sessionCtl.allSessions()) printSessionLine(s);
         }
 
         // ---- Core actions ----
         private void manageAvailability() {
             Student me = repo.getStudent(activeStudentId);
-            println(" Your availability:");
+            println("\nYour availability:");
             for (int i = 0; i < me.availability.size(); i++) println("  [" + i + "] " + me.availability.get(i));
             println("a) add, r) remove, x) back");
             String ch = prompt("> ");
@@ -349,56 +380,104 @@ public class StudyBuddyApp {
             String course = pickCourseFromMine(me);
             Map<Student, List<TimeSlot>> suggestions = sessionCtl.suggestMatches(me.id, course);
             if (suggestions.isEmpty()) { println("No overlapping availability found."); return; }
-            println(" Suggested matches (overlaps):");
+            println("\nSuggested matches (overlaps):");
             for (Map.Entry<Student, List<TimeSlot>> e : suggestions.entrySet()) {
                 println("* " + e.getKey());
                 for (TimeSlot ts : e.getValue()) println("    - " + ts);
             }
         }
 
-        private void proposeSession() {
+        private void searchSessions() {
+            println("\nSearch sessions: a) all, c) by course, n) by name, x) back");
+            String ch = prompt("> ");
+            if (ch.equalsIgnoreCase("a")) {
+                for (StudySession s : sessionCtl.allSessions()) printSessionLine(s);
+            } else if (ch.equalsIgnoreCase("c")) {
+                String course = prompt("Course (e.g., CPSC 3720): ");
+                List<StudySession> list = sessionCtl.searchByCourse(course);
+                if (list.isEmpty()) println("No sessions for that course.");
+                for (StudySession s : list) printSessionLine(s);
+            } else if (ch.equalsIgnoreCase("n")) {
+                String name = prompt("Student name contains: ");
+                List<StudySession> list = sessionCtl.searchByStudentName(name);
+                if (list.isEmpty()) println("No sessions involving that name.");
+                for (StudySession s : list) printSessionLine(s);
+            }
+        }
+
+        // NEW: Create your own session (starts with you as the first participant)
+        private void createNewSession() {
             Student me = repo.getStudent(activeStudentId);
-            if (me.availability.isEmpty()) { println("Add availability first."); return; }
             String course = pickCourseFromMine(me);
-            List<Student> peers = sessionCtl.classmates(me.id, course);
-            if (peers.isEmpty()) { println("No classmates in that course."); return; }
-            println("Choose invitee:");
-            for (int i = 0; i < peers.size(); i++) println("  [" + i + "] " + peers.get(i));
-            int idx = Integer.parseInt(prompt("Index: "));
-            if (idx < 0 || idx >= peers.size()) { println("Invalid index"); return; }
-            Student invitee = peers.get(idx);
-
-            println("Choose a time from YOUR availability:");
-            for (int i = 0; i < me.availability.size(); i++) println("  [" + i + "] " + me.availability.get(i));
-            int tIdx = Integer.parseInt(prompt("Index: "));
-            if (tIdx < 0 || tIdx >= me.availability.size()) { println("Invalid index"); return; }
-            TimeSlot chosen = me.availability.get(tIdx);
-
-            StudySession ss = sessionCtl.propose(me.id, invitee.id, course, chosen);
-            println("Proposed: " + ss);
+            DayOfWeek day = parseDay(prompt("Day (Mon..Sun): "));
+            LocalTime start = parseTime(prompt("Start (HH:mm): "));
+            LocalTime end = parseTime(prompt("End   (HH:mm): "));
+            TimeSlot ts = new TimeSlot(day, start, end);
+            StudySession ss = sessionCtl.create(course, ts, List.of(me.id));
+            println("Created session:");
+            printSessionLine(ss);
         }
 
-        private void reviewIncoming() {
-            List<StudySession> incoming = sessionCtl.incoming(activeStudentId);
-            if (incoming.isEmpty()) { println("No incoming proposals."); return; }
-            println("Incoming proposals:");
-            for (StudySession s : incoming) println("  " + s);
-            String sIdStr = prompt("Enter session ID to respond (or blank to skip): ");
-            if (sIdStr.isBlank()) return;
-            int sId = Integer.parseInt(sIdStr);
-            String resp = prompt("Accept (y) / Decline (n): ");
-            sessionCtl.respond(sId, resp.equalsIgnoreCase("y"));
-            println("Updated.");
+        private void joinSession() {
+            List<StudySession> all = new ArrayList<>(sessionCtl.allSessions());
+            if (all.isEmpty()) { println("No sessions available."); return; }
+            println("\nSessions:");
+            for (StudySession s : all) printSessionLine(s);
+            int id = Integer.parseInt(prompt("Enter session ID to join: "));
+            StudySession target = sessionCtl.getSession(id);
+            if (target == null) { println("No such session."); return; }
+            Student me = repo.getStudent(activeStudentId);
+            if (!me.courses.contains(target.course)) {
+                println("You must be enrolled in " + target.course + " to join.");
+                return;
+            }
+            sessionCtl.join(id, me.id);
+            println("Joined session " + id + ".");
         }
 
-        private void reviewOutgoing() {
-            List<StudySession> outgoing = sessionCtl.outgoing(activeStudentId);
-            if (outgoing.isEmpty()) { println("No outgoing proposals."); return; }
-            println("Outgoing proposals:");
-            for (StudySession s : outgoing) println("  " + s);
+        private void confirmMyMeetings() {
+            Student me = repo.getStudent(activeStudentId);
+            List<StudySession> mine = new ArrayList<>();
+            for (StudySession s : sessionCtl.allSessions()) if (s.isParticipant(me.id)) mine.add(s);
+            if (mine.isEmpty()) { println("You are not in any sessions yet. Join or create one first."); return; }
+            println("\nYour sessions:");
+            for (StudySession s : mine) printSessionLine(s);
+
+            String pick = prompt("Enter session ID to confirm (or blank to cancel): ");
+            if (pick.isBlank()) return;
+            int id = Integer.parseInt(pick);
+            StudySession target = sessionCtl.getSession(id);
+            if (target == null || !target.isParticipant(me.id)) { println("Invalid choice."); return; }
+            println("Are you sure you want to meet for " + target.course + " at " + target.time +
+                    " with participants " + toNames(target.participantIds) + "? Type 'confirm' to proceed: ");
+            String resp = prompt("");
+            if (resp.equalsIgnoreCase("confirm")) {
+                sessionCtl.confirm(id, me.id);
+                println("Confirmed. " + (target.isFullyConfirmed() ? "(All participants confirmed!)" : ""));
+            } else {
+                println("Not confirmed.");
+            }
         }
 
-        // --- helpers ---
+        // --- printing helpers ---
+        private void printSessionLine(StudySession s) {
+            String participants = toNames(s.participantIds);
+            String confirmed = toNames(s.confirmedIds);
+            String tail = s.isFullyConfirmed() ? " (ALL CONFIRMED)" : "";
+            println("  [" + s.id + "] " + s.course + " | " + s.time +
+                    " | participants=" + participants +
+                    " | confirmed=" + confirmed + tail);
+        }
+
+        private String toNames(Collection<Integer> ids) {
+            List<String> names = new ArrayList<>();
+            for (Integer pid : ids) {
+                Student s = repo.getStudent(pid);
+                if (s != null) names.add(s.name);
+            }
+            return names.toString();
+        }
+
         private String pickCourseFromMine(Student me) {
             if (me.courses.isEmpty()) throw new IllegalStateException("You must be enrolled in at least one course.");
             List<String> mine = new ArrayList<>(me.courses);
