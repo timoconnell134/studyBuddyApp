@@ -5,7 +5,7 @@ import java.util.*;
 /**
  * Study Buddy - Streamlined CLI app for Clemson students.
  *
- * Features in this version:
+ * Features:
  * - Create profile (prompted at startup) & enroll in courses.
  * - Add/remove availability.
  * - View classmates in your course.
@@ -13,6 +13,7 @@ import java.util.*;
  * - Search existing sessions; join one (course check enforced).
  * - Create your own session (you choose course + day/time).
  * - Confirm meetings you’re in (per-participant confirmations).
+ * - View all students' availability.
  *
  * Seeded data:
  *   Students: Alice, Bob, Jon, Mary (+ your new profile)
@@ -90,7 +91,7 @@ public class StudyBuddyApp {
         void confirm(int studentId) { if (participantIds.contains(studentId)) confirmedIds.add(studentId); }
         boolean isFullyConfirmed() { return !participantIds.isEmpty() && confirmedIds.containsAll(participantIds); }
         @Override public String toString() {
-            // Keep this minimal; CLI will print names for participants/confirmed.
+            // Minimal—CLI prints friendly names.
             return String.format("Session[%d] %s | %s", id, course, time);
         }
     }
@@ -236,7 +237,7 @@ public class StudyBuddyApp {
             seedClassmates();
             seedPlannedSessions();
             promptCreateProfile();
-            showRoster();
+            // (Removed showRoster() at startup)
             while (true) {
                 try {
                     showHeader();
@@ -247,9 +248,10 @@ public class StudyBuddyApp {
                         case "2": viewClassmates(); break;
                         case "3": suggestMatches(); break;
                         case "4": searchSessions(); break;
-                        case "5": createNewSession(); break;  // NEW
+                        case "5": createNewSession(); break;
                         case "6": joinSession(); break;
                         case "7": confirmMyMeetings(); break;
+                        case "8": viewAllStudentsAvailability(); break; // NEW
                         case "0": println("Goodbye!"); return;
                         default: println("Unknown option");
                     }
@@ -268,6 +270,7 @@ public class StudyBuddyApp {
             println("5) Create a new session");
             println("6) Join an existing session");
             println("7) Confirm my meetings");
+            println("8) View students' availability");
             println("0) Exit");
         }
 
@@ -337,13 +340,6 @@ public class StudyBuddyApp {
             return courses;
         }
 
-        private void showRoster() {
-            println("\n-- Current Roster --");
-            for (Student s : repo.allStudents()) println("  - " + s);
-            println("\n-- Pre-planned Sessions --");
-            for (StudySession s : sessionCtl.allSessions()) printSessionLine(s);
-        }
-
         // ---- Core actions ----
         private void manageAvailability() {
             Student me = repo.getStudent(activeStudentId);
@@ -405,7 +401,6 @@ public class StudyBuddyApp {
             }
         }
 
-        // NEW: Create your own session (starts with you as the first participant)
         private void createNewSession() {
             Student me = repo.getStudent(activeStudentId);
             String course = pickCourseFromMine(me);
@@ -456,6 +451,21 @@ public class StudyBuddyApp {
                 println("Confirmed. " + (target.isFullyConfirmed() ? "(All participants confirmed!)" : ""));
             } else {
                 println("Not confirmed.");
+            }
+        }
+
+        // NEW: View all students' availability (names with each slot)
+        private void viewAllStudentsAvailability() {
+            println("\n-- Students' Availability --");
+            for (Student s : repo.allStudents()) {
+                println("  " + s.name + " (" + s.courses + "):");
+                if (s.availability.isEmpty()) {
+                    println("    (no availability added)");
+                } else {
+                    for (TimeSlot ts : s.availability) {
+                        println("    - " + ts);
+                    }
+                }
             }
         }
 
